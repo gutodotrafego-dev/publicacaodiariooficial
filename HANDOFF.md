@@ -381,6 +381,8 @@ futuras, preferir verificação via `preview_eval` (DOM) a `preview_screenshot` 
 | `GOOGLE_PLACE_ID` | ID do local no Google Places, usado junto com a chave acima. |
 | `NEXT_PUBLIC_GOOGLE_REVIEW_URL` | Link fixo para o CTA "Deixar uma avaliação no Google". Já vem com valor padrão configurado no `.env.example` e replicado como fallback em `config/contact.ts`: `https://g.page/r/Ce8evMwiD456EBM/review`. |
 | `NEXT_PUBLIC_GOOGLE_MAPS_PROFILE_URL` | URL pública do perfil no Google Maps, usada no CTA "Ver avaliações no Google". Se vazia, esse CTA fica oculto. |
+| `NEXT_PUBLIC_GOOGLE_ADS_ID` | Conversion ID do Google Ads (formato `AW-XXXXXXXXX`), usado para injetar o gtag.js em `app/layout.tsx`. Se ausente, o script não é carregado. **Configurado em produção**: `AW-11546328844`. |
+| `NEXT_PUBLIC_GOOGLE_ADS_CONVERSION_LABEL` | Conversion Label da ação "Lead [ORÇAMENTO]" no Google Ads. Junto com o ID acima, forma o `send_to` do evento de conversão disparado em `quote_form_success`. **Configurado em produção**: `GL-OCPHGiYcaEIz-24Er`. |
 
 ---
 
@@ -667,6 +669,49 @@ Preservado sem alteração (fora do escopo do pedido):
   (`.bg-whatsapp[aria-label*="WhatsApp"]`) presente.
 - Confirmado o mesmo em mobile (375×812), sem overflow horizontal (`scrollWidth === clientWidth`).
 - Console verificado (`level: "error"`): nenhum erro em nenhum dos dois breakpoints.
+
+### Sessão (2026-07-07) — Google Ads: gtag.js + evento de conversão
+
+Objetivo: rastrear a conversão de lead qualificado (envio bem-sucedido do formulário) no Google Ads.
+
+Decisão de abordagem: o site já usa GTM (`NEXT_PUBLIC_GTM_ID`) e já dispara `quote_form_success` no
+`dataLayer` sem PII. A opção mais simples (configurar a tag de conversão direto no GTM, sem código)
+foi oferecida ao usuário, mas ele optou por instalar o gtag.js do Google Ads diretamente no código,
+em paralelo ao GTM (mesmo padrão já usado para o Meta Pixel). Os dois coexistem sem conflito — ambos
+usam `window.dataLayer`, mas com formatos de push diferentes (objetos com `event` vs. `arguments`).
+
+O que foi implementado:
+- **`app/layout.tsx`**: lê `NEXT_PUBLIC_GOOGLE_ADS_ID`; se presente, injeta o script
+  `https://www.googletagmanager.com/gtag/js?id=...` + script de init (`gtag('js', ...)`,
+  `gtag('config', ...)`), seguindo o mesmo padrão condicional do GTM/Meta Pixel (não injeta nada se
+  a env var estiver ausente).
+- **`lib/analytics.ts`**: adicionado `window.gtag` ao tipo global e a função
+  `trackGoogleAdsConversion()`, que só dispara se `window.gtag` existir e as duas env vars
+  (`NEXT_PUBLIC_GOOGLE_ADS_ID` e `NEXT_PUBLIC_GOOGLE_ADS_CONVERSION_LABEL`) estiverem configuradas.
+  Chama `gtag('event', 'conversion', { send_to: '<id>/<label>' })` — sem nenhum dado pessoal.
+- **`components/landing/lead-form.tsx`**: `trackGoogleAdsConversion()` chamada logo após
+  `trackEvent('quote_form_success', ...)`, ou seja, só dispara quando o backend confirma o
+  recebimento do lead (mesmo ponto de disparo do evento de sucesso do GTM).
+- **`.env.example`**: adicionadas `NEXT_PUBLIC_GOOGLE_ADS_ID` e
+  `NEXT_PUBLIC_GOOGLE_ADS_CONVERSION_LABEL` (vazias, com comentário explicativo).
+
+Valores reais fornecidos pelo usuário (já configurados em `.env.local`, não versionado):
+- Conversion ID: `AW-11546328844`
+- Conversion Label: `GL-OCPHGiYcaEIz-24Er` (ação "Lead [ORÇAMENTO]")
+
+**Pendente**: adicionar as duas variáveis acima nas Environment Variables do projeto na Vercel
+(mesmo fluxo já usado para `LEAD_WEBHOOK_URL`) para que a conversão dispare em produção.
+
+### Testes realizados
+
+- `npm run typecheck` e `npm run lint` — passaram sem erros.
+- Confirmado via `preview_eval` que `window.gtag` é injetado e funcional quando as env vars estão
+  presentes (script `google-ads-gtag-src` e `google-ads-gtag-init` no DOM).
+- Simulado o fluxo completo do formulário (radio → Continuar → preencher nome/telefone/e-mail →
+  enviar), com `window.fetch` interceptado para simular resposta `200` do backend (sem depender de
+  webhook real configurado localmente). Capturada a chamada real disparada:
+  `gtag('event', 'conversion', { send_to: 'AW-11546328844/GL-OCPHGiYcaEIz-24Er' })`.
+- Nenhum erro no console durante o fluxo.
 
 ### Arquivos alterados nesta sessão
 

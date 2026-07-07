@@ -15,7 +15,7 @@ import {
   getWhatsappRedirectUrl,
 } from '@/lib/whatsapp'
 import { getAttribution } from '@/lib/attribution'
-import { trackEvent } from '@/lib/analytics'
+import { trackEvent, trackGoogleAdsConversion } from '@/lib/analytics'
 import { onLeadFormPrefill } from '@/lib/form-bus'
 import { contactConfig } from '@/config/contact'
 import { cn } from '@/lib/cn'
@@ -146,6 +146,7 @@ export function LeadForm({
         landing_page_type: landingPageType,
         publication_need: needValue,
       })
+      trackGoogleAdsConversion()
 
       const needLabel = getPublicationNeedLabel(needValue)
       const message = buildWhatsappSuccessMessage(values.name, needLabel)
