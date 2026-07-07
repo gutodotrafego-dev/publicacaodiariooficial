@@ -333,7 +333,7 @@ export function LeadForm({
                 variant="green"
                 size="lg"
                 disabled={isBusy}
-                className="flex-1 whitespace-nowrap !text-sm sm:!text-base"
+                className="sm:flex-1 whitespace-nowrap !text-sm sm:!text-base"
               >
                 {status === 'submitting' && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
                 {status === 'submitting'
