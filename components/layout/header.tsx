@@ -81,7 +81,7 @@ export function Header() {
           <Button
             type="button"
             variant="green"
-            size="md"
+            size="lg"
             onClick={handleClick}
             className="flex-shrink-0 !w-auto"
           >
