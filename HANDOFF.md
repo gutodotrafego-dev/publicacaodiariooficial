@@ -382,7 +382,7 @@ futuras, preferir verificação via `preview_eval` (DOM) a `preview_screenshot` 
 | `NEXT_PUBLIC_GOOGLE_REVIEW_URL` | Link fixo para o CTA "Deixar uma avaliação no Google". Já vem com valor padrão configurado no `.env.example` e replicado como fallback em `config/contact.ts`: `https://g.page/r/Ce8evMwiD456EBM/review`. |
 | `NEXT_PUBLIC_GOOGLE_MAPS_PROFILE_URL` | URL pública do perfil no Google Maps, usada no CTA "Ver avaliações no Google". Se vazia, esse CTA fica oculto. |
 | `NEXT_PUBLIC_GOOGLE_ADS_ID` | Conversion ID do Google Ads (formato `AW-XXXXXXXXX`), usado para injetar o gtag.js (Google Tag) uma única vez, globalmente, em `app/layout.tsx` — com `gtag('config', ...)`. Se ausente, o script não é carregado e a conversão não é disparada (o redirecionamento ao WhatsApp acontece normalmente). **Configurado em produção**: `AW-11546328844`. |
-| `NEXT_PUBLIC_GOOGLE_ADS_CONVERSION_LABEL` | Conversion Label da ação "Lead [ORÇAMENTO]" no Google Ads. Junto com o ID acima, forma o `send_to` do evento de conversão disparado em `quote_form_success`. **Configurado em produção**: `GL-OCPHGiYcaElz-24Er`. |
+| `NEXT_PUBLIC_GOOGLE_ADS_CONVERSION_LABEL` | Conversion Label da ação "Lead [ORÇAMENTO]" no Google Ads. Junto com o ID acima, forma o `send_to` do evento de conversão, disparado no submit válido do botão "Receber orçamento no WhatsApp" (ver sessão 2026-07-08, medição de clique válido). **Configurado em produção**: `GL-OCPHGiYcaElz-24Er`. |
 
 ---
 
@@ -938,3 +938,45 @@ sessão (nenhuma alteração real permanece nele).
 - `LEAD_WEBHOOK_URL` (planilha) — configurar quando o site for hospedado.
 - Demais pendências (razão social, CNPJ, horário de atendimento, redes sociais,
   `NEXT_PUBLIC_WHATSAPP_NUMBER` em produção) seguem as mesmas das seções 7 e 10.
+
+### Sessão (2026-07-08, continuação) — conversão passa a medir o submit válido do botão verde
+
+A conversão do Google Ads deixou de depender da confirmação de sucesso do `/api/leads` e passou a
+medir o **submit válido** do formulário — ou seja, dispara assim que o usuário clica no botão verde
+"Receber orçamento no WhatsApp" **e** os campos da etapa 2 passam pela validação do React Hook Form
+(`zodResolver`), independente da resposta do backend.
+
+Em `components/landing/lead-form.tsx`: novo ref `hasTrackedConversionRef` e nova função
+`trackConversionOnce()`, chamada dentro de `onSubmit` logo após `trackEvent('quote_form_submit', ...)`
+e antes do `fetch('/api/leads')`. O redirecionamento ao WhatsApp (`redirectOnce`, guardado por
+`hasRedirectedRef`) deixou de depender do `event_callback`/timeout da conversão — agora é chamado
+diretamente após o sucesso do `/api/leads`, já que a conversão não precisa mais gatear o
+redirecionamento.
+
+**send_to correto**: `AW-11546328844/GL-OCPHGiYcaElz-24Er` (rótulo com `l` minúsculo — `YcaElz`,
+não `YcaEIz`).
+
+Sequência confirmada no `dataLayer`: `quote_form_submit` → `conversion` → `quote_form_success` →
+`whatsapp_redirect`.
+
+**Risco documentado**: como a conversão agora mede o clique válido (não o lead confirmado), se o
+`/api/leads` falhar depois do clique, a conversão **já foi disparada** mesmo assim — confirmado em
+teste com backend mockado retornando erro 503 (1 conversão, 1 fetch, erro exibido na tela, sem
+redirecionamento). `hasTrackedConversionRef` não é resetado no `catch`, então um reenvio após esse
+erro não dispara uma segunda conversão para o mesmo usuário/sessão.
+
+**Sobre os "dois cartões" de conversão no Tag Assistant**: investigado e confirmado que **não é
+duplicidade de código**. Instrumentação de `window.gtag` no preview mostrou exatamente **1 chamada
+JS** `gtag('event', 'conversion', { send_to: 'AW-11546328844/GL-OCPHGiYcaElz-24Er', ... })` por
+clique válido. A inspeção do Network mostrou que essa única chamada gera **2 hits técnicos
+pareados**, ambos com o mesmo `label=GL-OCPHGiYcaElz-24Er`, mesmo `fst`/`gtm` (mesma sessão/chamada):
+`https://www.googleadservices.com/pagead/conversion/11546328844/...&fmt=7` (pixel principal) e
+`https://www.google.com.br/pagead/1p-conversion/11546328844/...&fmt=8&is_vtc=1` (ping espelho de
+primeira parte, disparado automaticamente pelo próprio gtag.js do Google Ads para melhorar a taxa de
+correspondência quando cookies de terceiros são bloqueados). O mesmo padrão (múltiplos hits por uma
+única chamada) já ocorre também no `gtag('config', ...)` do carregamento da página. O Google Ads
+deduplica esses hits pareados e reporta 1 conversão por evento lógico — não há risco de contagem
+dupla no painel do Google Ads.
+
+Implementação considerada final e aprovada nesta sessão. Nenhuma alteração adicional de código feita
+a partir deste ponto.
