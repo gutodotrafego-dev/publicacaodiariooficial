@@ -747,6 +747,51 @@ isolando a mesma lógica (`createOnceCallback` + `event_callback` + timeout de 1
 `window.gtag` real da página e um callback mock — resultado: exatamente 1 execução, mesmo com o
 callback real do gtag e o timeout de segurança correndo em paralelo.
 
+### Auditoria (mesma sessão) — verificação completa da conversão do Google Ads
+
+Auditoria solicitada pelo usuário após ver "dois cartões de Conversão" no Tag Assistant. Busca por
+`AW-11546328844`, `GL-OCPHGiYcaElz-24Er`, `gtag`, `conversion`, `send_to`, `event_callback`,
+`event_timeout`, `dataLayer`, `GoogleTagManager` confirmou apenas 5 arquivos reais envolvidos:
+`app/layout.tsx`, `lib/analytics.ts`, `components/landing/lead-form.tsx`, `.env.example`,
+`.env.local` (não versionado). Um único `<Script id="google-ads-gtag-init">` em `app/layout.tsx`,
+uma única chamada a `trackGoogleAdsConversion()` (dentro do bloco de sucesso do `onSubmit` em
+`lead-form.tsx`) — sem duplicação de código.
+
+**Achado 1 (real, corrigido)** — falha de proteção contra reenvio: `disabled={isBusy}` depende de
+um re-render do React, que não é síncrono. Um teste de clique triplo (3 cliques na mesma tarefa
+síncrona) resultou em **3 chamadas a `/api/leads` e 3 eventos de conversão**. Corrigido com uma
+guarda síncrona (`isSubmittingRef` via `useRef`) checada no início do `onSubmit`, antes de qualquer
+`await` ou `setState` — reseta apenas no branch de erro (permite nova tentativa). Reteste confirmou
+1 fetch / 1 conversão mesmo com 3 cliques disparados na mesma tarefa síncrona.
+
+**Achado 2 (não é bug do código — achado explica os "dois cartões" no Tag Assistant)**: ao
+instrumentar `window.dataLayer.push` e `window.gtag` durante um envio real, apareceram eventos
+`gtm.formInteract` e `gtm.formSubmit` no `dataLayer` **que não existem em nenhum arquivo do
+projeto** (confirmado por grep — zero ocorrências de `formInteract`/`formSubmit` no código). Esses
+eventos são disparados pelo próprio script `googletagmanager.com/gtag/js?id=AW-11546328844` (função
+de detecção automática de formulários da tag do Google Ads), de forma totalmente independente do
+nosso `trackGoogleAdsConversion()` — inclusive `gtm.formSubmit` dispara no evento nativo de submit
+do `<form>`, **antes** da validação/resposta do backend. Essa é a explicação mais provável para o
+segundo "cartão de Conversão" no Tag Assistant: não é um envio duplicado do nosso evento, e sim um
+sinal de detecção automática de formulário da própria tag do Google Ads, correndo em paralelo ao
+evento de conversão explícito. **Isso não pode ser corrigido no código** (é comportamento do script
+externo do Google) — precisa ser investigado/desativado, se for o caso, na conta do Google Ads
+(Ferramentas e configurações → Conversões → verificar se existe uma ação de conversão adicional
+"detectada automaticamente" via formulário, distinta de "Lead [ORÇAMENTO]", e se está marcada como
+"Incluir nas conversões").
+
+Testes executados (todos com `window.fetch`/`window.gtag` interceptados, sem afetar o webhook
+real):
+- Antes do envio (radio → Continuar → preencher campos): 0 chamadas a `gtag`.
+- Envio único bem-sucedido: exatamente 1 evento `gtag('event','conversion', ...)`, `send_to` exato
+  (`AW-11546328844/GL-OCPHGiYcaElz-24Er`), na ordem esperada (`quote_form_submit` → fetch →
+  `quote_form_success` → `whatsapp_redirect` → `conversion`).
+- Erro do backend (mock 502): 0 eventos de conversão.
+- `window.gtag` indisponível: redirecionamento imediato (fallback), sem erro no console.
+- Clique triplo: 1 fetch / 1 conversão após a correção (3/3 antes da correção).
+- Nenhum PII (nome/telefone/e-mail/necessidade em texto livre) no payload do evento de conversão em
+  nenhum dos testes.
+
 ### Arquivos alterados nesta sessão
 
 `components/landing/hero.tsx`, `components/layout/footer.tsx`, `components/landing/landing-page.tsx`,

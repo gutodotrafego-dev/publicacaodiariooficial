@@ -39,6 +39,7 @@ export function LeadForm({
   const [step, setStep] = useState<Step>(defaultPublicationNeed ? 2 : 1)
   const formStartedAt = useRef(Date.now())
   const hasTrackedStart = useRef(false)
+  const isSubmittingRef = useRef(false)
 
   const {
     register,
@@ -100,6 +101,12 @@ export function LeadForm({
   }
 
   const onSubmit = handleSubmit(async (values) => {
+    // Guarda síncrona contra reenvio: o `disabled={isBusy}` do botão só surte
+    // efeito após o próximo render do React, o que não impede cliques muito
+    // rápidos (ou disparos duplicados de evento) na mesma tarefa síncrona.
+    if (isSubmittingRef.current) return
+    isSubmittingRef.current = true
+
     const needValue = values.publicationNeed as PublicationNeed
 
     trackEvent('quote_form_submit', {
@@ -165,6 +172,7 @@ export function LeadForm({
         publication_need: needValue,
       })
       setStatus('error')
+      isSubmittingRef.current = false
     }
   })
 
