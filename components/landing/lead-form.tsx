@@ -40,6 +40,7 @@ export function LeadForm({
   const formStartedAt = useRef(Date.now())
   const hasTrackedStart = useRef(false)
   const isSubmittingRef = useRef(false)
+  const hasRedirectedRef = useRef(false)
 
   const {
     register,
@@ -160,12 +161,20 @@ export function LeadForm({
       trackEvent('whatsapp_redirect', { landing_page_type: landingPageType })
       setStatus('success')
 
+      // `trackGoogleAdsConversion` pode invocar este callback duas vezes
+      // (event_callback do gtag + timeout de segurança), então protegemos o
+      // redirecionamento em si contra execução duplicada com useRef.
+      hasRedirectedRef.current = false
+      function redirectOnce() {
+        if (hasRedirectedRef.current) return
+        hasRedirectedRef.current = true
+        window.location.assign(getWhatsappRedirectUrl(message))
+      }
+
       // Redireciona ao WhatsApp assim que a conversão do Google Ads for
       // registrada (ou após o timeout de segurança, caso o gtag.js esteja
       // bloqueado) — nunca antes da confirmação de sucesso do webhook.
-      trackGoogleAdsConversion(() => {
-        window.location.assign(getWhatsappRedirectUrl(message))
-      })
+      trackGoogleAdsConversion(redirectOnce)
     } catch {
       trackEvent('quote_form_error', {
         landing_page_type: landingPageType,

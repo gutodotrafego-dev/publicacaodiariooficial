@@ -381,7 +381,7 @@ futuras, preferir verificação via `preview_eval` (DOM) a `preview_screenshot` 
 | `GOOGLE_PLACE_ID` | ID do local no Google Places, usado junto com a chave acima. |
 | `NEXT_PUBLIC_GOOGLE_REVIEW_URL` | Link fixo para o CTA "Deixar uma avaliação no Google". Já vem com valor padrão configurado no `.env.example` e replicado como fallback em `config/contact.ts`: `https://g.page/r/Ce8evMwiD456EBM/review`. |
 | `NEXT_PUBLIC_GOOGLE_MAPS_PROFILE_URL` | URL pública do perfil no Google Maps, usada no CTA "Ver avaliações no Google". Se vazia, esse CTA fica oculto. |
-| `NEXT_PUBLIC_GOOGLE_ADS_ID` | Conversion ID do Google Ads (formato `AW-XXXXXXXXX`), usado para injetar o gtag.js em `app/layout.tsx`. Se ausente, o script não é carregado. **Configurado em produção**: `AW-11546328844`. |
+| `NEXT_PUBLIC_GOOGLE_ADS_ID` | Conversion ID do Google Ads (formato `AW-XXXXXXXXX`). **Não é mais injetado em `app/layout.tsx`** (ver sessão 2026-07-08): o gtag.js é carregado sob demanda por `lib/analytics.ts` (`ensureGoogleAdsGtagLoaded`) somente no momento do disparo manual da conversão, nunca no carregamento da página. Se ausente, a conversão não é disparada (o redirecionamento ao WhatsApp acontece normalmente). **Configurado em produção**: `AW-11546328844`. |
 | `NEXT_PUBLIC_GOOGLE_ADS_CONVERSION_LABEL` | Conversion Label da ação "Lead [ORÇAMENTO]" no Google Ads. Junto com o ID acima, forma o `send_to` do evento de conversão disparado em `quote_form_success`. **Configurado em produção**: `GL-OCPHGiYcaElz-24Er`. |
 
 ---
@@ -791,6 +791,75 @@ real):
 - Clique triplo: 1 fetch / 1 conversão após a correção (3/3 antes da correção).
 - Nenhum PII (nome/telefone/e-mail/necessidade em texto livre) no payload do evento de conversão em
   nenhum dos testes.
+
+### Sessão (2026-07-08) — snippet manual da conversão, sem gtag.js no layout/head
+
+Requisito do usuário: parar de instalar o gtag.js no `app/layout.tsx`/`<head>` (evita o script de
+detecção automática de formulário do Google Ads, achado na auditoria anterior) e disparar a
+conversão manualmente, exatamente com este formato:
+
+```js
+window.gtag('event', 'conversion', {
+  send_to: 'AW-11546328844/GL-OCPHGiYcaElz-24Er',
+  event_callback: redirectOnce,
+  event_timeout: 1500,
+})
+```
+
+Mudanças:
+- **`app/layout.tsx`**: removidos os `<Script id="google-ads-gtag-src">` e
+  `<Script id="google-ads-gtag-init">` (e o `gtag('config', ...)` que vinha junto). O layout não
+  referencia mais `NEXT_PUBLIC_GOOGLE_ADS_ID`/`NEXT_PUBLIC_GOOGLE_ADS_CONVERSION_LABEL` — GTM e Meta
+  Pixel continuam como antes, sem alteração.
+- **`lib/analytics.ts`**: `trackGoogleAdsConversion(onComplete)` agora chama
+  `ensureGoogleAdsGtagLoaded(conversionId)` internamente, que injeta o script
+  `googletagmanager.com/gtag/js?id=...` sob demanda (uma única vez, via flag de módulo +
+  checagem de `document.getElementById`) e garante um shim de `window.gtag` (push no
+  `dataLayer`) caso o script real ainda não tenha terminado de carregar. **Nunca chama
+  `gtag('config', ...)`** — só o evento manual de conversão. Tipo de `window.dataLayer` alterado de
+  `Record<string, unknown>[]` para `unknown[]` (necessário para aceitar tanto os pushes de objeto do
+  `trackEvent` quanto os pushes de array do shim do gtag).
+- **`components/landing/lead-form.tsx`**: adicionado `hasRedirectedRef` (`useRef`), separado do
+  `isSubmittingRef` já existente. `redirectOnce()` é declarado dentro do bloco de sucesso do
+  `onSubmit`, verifica/seta `hasRedirectedRef.current` antes de chamar
+  `window.location.assign(getWhatsappRedirectUrl(message))`, e é passado como `onComplete` para
+  `trackGoogleAdsConversion`. Isso protege o redirecionamento contra dupla execução (o
+  `event_callback` do gtag e o timeout de segurança de 1500ms podem, em teoria, disparar os dois).
+  `isSubmittingRef` (proteção contra reenvio do formulário) permanece como estava, sem alteração.
+
+Ordem de disparo confirmada (validação → `/api/leads` OK → `quote_form_success` →
+`whatsapp_redirect` → conversão → redirecionamento), igual à sessão anterior — só mudou *como* o
+gtag.js é carregado (sob demanda, não mais no layout).
+
+Testes executados (`npm run typecheck`, `npm run lint`, e `preview_*` com `window.gtag` espionado e
+`window.fetch` interceptado para simular respostas do backend):
+- `npm run typecheck` — passou sem erros (após o ajuste de tipo do `dataLayer`).
+- `npm run lint` — passou sem erros.
+- Grep por `GL-OCPHGiYcaEIz-24Er` (rótulo incorreto, I maiúsculo) em todo o projeto: 0 ocorrências.
+  Único rótulo presente é o correto, `GL-OCPHGiYcaElz-24Er` (L minúsculo).
+- Carregamento limpo da página (reload, zero interação): nenhum script com id
+  `google-ads-gtag-lazy` no DOM, `typeof window.gtag === 'undefined'`, `dataLayer` contém apenas o
+  evento próprio `landing_page_view` — confirma que o gtag.js **não** é carregado no
+  carregamento da página.
+- Envio bem-sucedido (fetch mockado com `200`): exatamente 1 chamada
+  `gtag('event', 'conversion', { send_to: 'AW-11546328844/GL-OCPHGiYcaElz-24Er', event_callback,
+  event_timeout: 1500 })`; script `google-ads-gtag-lazy` aparece no DOM somente após esse disparo.
+- Erro do backend (fetch mockado com `503`, replicando o `webhook_not_configured` real do ambiente
+  local): 0 chamadas a `gtag('event', 'conversion', ...)`.
+- Invocação manual do `event_callback` capturado duas vezes seguidas (simulando callback do gtag +
+  timeout de segurança disparando em sequência): nenhum erro lançado, consistente com a guarda
+  `hasRedirectedRef`. (A navegação real via `window.location.assign` não pôde ser observada
+  diretamente no sandbox de preview — limitação já documentada em sessões anteriores — mas a lógica
+  da guarda foi confirmada por revisão de código, seguindo o mesmo padrão já validado do
+  `isSubmittingRef`.)
+
+**Nota sobre o Achado 2 da auditoria anterior** (eventos `gtm.formInteract`/`gtm.formSubmit`
+aparecendo no Tag Assistant): como o gtag.js agora só é carregado depois do envio bem-sucedido
+(nunca no carregamento da página nem no `<form>` presente desde o início), a superfície para essa
+detecção automática do próprio script do Google diminui bastante, mas a causa raiz continua sendo
+comportamento da tag do Google Ads, não do código do site — a recomendação de verificar a conta do
+Google Ads (Ferramentas e configurações → Conversões) permanece válida caso o comportamento ainda
+seja observado em produção.
 
 ### Arquivos alterados nesta sessão
 
