@@ -10,12 +10,12 @@ import { leadFormSchema, type LeadFormSchema } from '@/lib/validations'
 import { PUBLICATION_NEED_OPTIONS, getPublicationNeedLabel } from '@/config/landing-pages'
 import { maskBrazilianPhone, onlyDigits } from '@/lib/phone'
 import {
-  buildWhatsappSuccessMessage,
+  buildWhatsappGenericMessage,
   buildWhatsappErrorMessage,
   getWhatsappRedirectUrl,
 } from '@/lib/whatsapp'
 import { getAttribution } from '@/lib/attribution'
-import { trackEvent, trackGoogleAdsConversion } from '@/lib/analytics'
+import { trackEvent } from '@/lib/analytics'
 import { onLeadFormPrefill } from '@/lib/form-bus'
 import { contactConfig } from '@/config/contact'
 import { cn } from '@/lib/cn'
@@ -40,8 +40,6 @@ export function LeadForm({
   const formStartedAt = useRef(Date.now())
   const hasTrackedStart = useRef(false)
   const isSubmittingRef = useRef(false)
-  const hasRedirectedRef = useRef(false)
-  const hasTrackedConversionRef = useRef(false)
 
   const {
     register,
@@ -102,22 +100,6 @@ export function LeadForm({
     setStep(1)
   }
 
-  // Dispara a conversão do Google Ads uma única vez, assim que o clique no
-  // botão "Receber orçamento no WhatsApp" passa pela validação do React Hook
-  // Form — mede o clique/submit válido, não a confirmação do lead pelo
-  // backend. Protegida por `hasTrackedConversionRef` contra clique duplo,
-  // triplo ou reenvio após erro (nunca dispara mais de uma vez por sessão de
-  // formulário).
-  function trackConversionOnce() {
-    if (hasTrackedConversionRef.current) return
-    hasTrackedConversionRef.current = true
-    trackGoogleAdsConversion(() => {
-      // Apenas marca que a chamada de conversão terminou (evento real ou
-      // timeout de segurança) — o redirecionamento ao WhatsApp não depende
-      // deste callback, é controlado pela resposta do `/api/leads`.
-    })
-  }
-
   const onSubmit = handleSubmit(async (values) => {
     // Guarda síncrona contra reenvio: o `disabled={isBusy}` do botão só surte
     // efeito após o próximo render do React, o que não impede cliques muito
@@ -131,10 +113,6 @@ export function LeadForm({
       landing_page_type: landingPageType,
       publication_need: needValue,
     })
-
-    // Conversão do Google Ads: dispara aqui, no submit válido (campos já
-    // validados pelo zodResolver), independente do resultado do `/api/leads`.
-    trackConversionOnce()
 
     setStatus('submitting')
 
@@ -176,23 +154,21 @@ export function LeadForm({
         publication_need: needValue,
       })
 
-      const needLabel = getPublicationNeedLabel(needValue)
-      const message = buildWhatsappSuccessMessage(values.name, needLabel)
+      // Mensagem genérica (sem nome/telefone/e-mail) — o lead já foi enviado
+      // ao backend acima, então a URL do WhatsApp salva no sessionStorage não
+      // precisa carregar nenhum dado pessoal preenchido no formulário.
+      const whatsappUrl = getWhatsappRedirectUrl(buildWhatsappGenericMessage())
 
       setStatus('success')
 
-      // Protegido contra execução duplicada com useRef (a conversão do Google
-      // Ads já foi disparada antes, no submit válido — não depende mais deste
-      // redirecionamento).
-      hasRedirectedRef.current = false
-      function redirectOnce() {
-        if (hasRedirectedRef.current) return
-        hasRedirectedRef.current = true
-        trackEvent('whatsapp_redirect', { landing_page_type: landingPageType })
-        window.location.assign(getWhatsappRedirectUrl(message))
-      }
-
-      redirectOnce()
+      // A conversão do Google Ads não é mais disparada aqui: apenas guardamos
+      // uma flag (sem PII) e a URL final do WhatsApp (também sem PII) no
+      // sessionStorage, e redirecionamos para /obrigado — é lá que a
+      // conversão é medida uma única vez, antes do redirecionamento ao
+      // WhatsApp.
+      sessionStorage.setItem('central_lead_submitted', 'true')
+      sessionStorage.setItem('central_whatsapp_url', whatsappUrl)
+      window.location.assign('/obrigado')
     } catch {
       trackEvent('quote_form_error', {
         landing_page_type: landingPageType,
