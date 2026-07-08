@@ -158,16 +158,18 @@ export function LeadForm({
       const needLabel = getPublicationNeedLabel(needValue)
       const message = buildWhatsappSuccessMessage(values.name, needLabel)
 
-      trackEvent('whatsapp_redirect', { landing_page_type: landingPageType })
       setStatus('success')
 
       // `trackGoogleAdsConversion` pode invocar este callback duas vezes
       // (event_callback do gtag + timeout de segurança), então protegemos o
-      // redirecionamento em si contra execução duplicada com useRef.
+      // redirecionamento em si contra execução duplicada com useRef. O evento
+      // `whatsapp_redirect` só é disparado aqui dentro, imediatamente antes do
+      // redirecionamento real — nunca antes da conversão do Google Ads.
       hasRedirectedRef.current = false
       function redirectOnce() {
         if (hasRedirectedRef.current) return
         hasRedirectedRef.current = true
+        trackEvent('whatsapp_redirect', { landing_page_type: landingPageType })
         window.location.assign(getWhatsappRedirectUrl(message))
       }
 
