@@ -382,7 +382,7 @@ futuras, preferir verificação via `preview_eval` (DOM) a `preview_screenshot` 
 | `NEXT_PUBLIC_GOOGLE_REVIEW_URL` | Link fixo para o CTA "Deixar uma avaliação no Google". Já vem com valor padrão configurado no `.env.example` e replicado como fallback em `config/contact.ts`: `https://g.page/r/Ce8evMwiD456EBM/review`. |
 | `NEXT_PUBLIC_GOOGLE_MAPS_PROFILE_URL` | URL pública do perfil no Google Maps, usada no CTA "Ver avaliações no Google". Se vazia, esse CTA fica oculto. |
 | `NEXT_PUBLIC_GOOGLE_ADS_ID` | Conversion ID do Google Ads (formato `AW-XXXXXXXXX`), usado para injetar o gtag.js em `app/layout.tsx`. Se ausente, o script não é carregado. **Configurado em produção**: `AW-11546328844`. |
-| `NEXT_PUBLIC_GOOGLE_ADS_CONVERSION_LABEL` | Conversion Label da ação "Lead [ORÇAMENTO]" no Google Ads. Junto com o ID acima, forma o `send_to` do evento de conversão disparado em `quote_form_success`. **Configurado em produção**: `GL-OCPHGiYcaEIz-24Er`. |
+| `NEXT_PUBLIC_GOOGLE_ADS_CONVERSION_LABEL` | Conversion Label da ação "Lead [ORÇAMENTO]" no Google Ads. Junto com o ID acima, forma o `send_to` do evento de conversão disparado em `quote_form_success`. **Configurado em produção**: `GL-OCPHGiYcaElz-24Er`. |
 
 ---
 
@@ -697,7 +697,7 @@ O que foi implementado:
 
 Valores reais fornecidos pelo usuário (já configurados em `.env.local`, não versionado):
 - Conversion ID: `AW-11546328844`
-- Conversion Label: `GL-OCPHGiYcaEIz-24Er` (ação "Lead [ORÇAMENTO]")
+- Conversion Label: `GL-OCPHGiYcaElz-24Er` (ação "Lead [ORÇAMENTO]")
 
 **Pendente**: adicionar as duas variáveis acima nas Environment Variables do projeto na Vercel
 (mesmo fluxo já usado para `LEAD_WEBHOOK_URL`) para que a conversão dispare em produção.
@@ -710,8 +710,42 @@ Valores reais fornecidos pelo usuário (já configurados em `.env.local`, não v
 - Simulado o fluxo completo do formulário (radio → Continuar → preencher nome/telefone/e-mail →
   enviar), com `window.fetch` interceptado para simular resposta `200` do backend (sem depender de
   webhook real configurado localmente). Capturada a chamada real disparada:
-  `gtag('event', 'conversion', { send_to: 'AW-11546328844/GL-OCPHGiYcaEIz-24Er' })`.
+  `gtag('event', 'conversion', { send_to: 'AW-11546328844/GL-OCPHGiYcaElz-24Er' })`.
 - Nenhum erro no console durante o fluxo.
+
+### Correção (mesma sessão) — rótulo real e timing do redirecionamento
+
+O usuário forneceu o rótulo de conversão exato pela interface do Google Ads (a versão anterior
+tinha um caractere incorreto: `...aEIz...` (I maiúsculo) em vez do correto `...aElz...` (L
+minúsculo)) e pediu regras explícitas de timing para o disparo:
+
+1. Só disparar após: formulário validado → lead registrado com sucesso → webhook confirmou
+   recebimento — nunca antes (nem no clique do radio, nem em "Continuar", nem ao trocar de etapa,
+   nem em erro de validação/webhook, nem no botão flutuante do WhatsApp — este último nem existe
+   mais, ver seção anterior).
+2. O redirecionamento ao WhatsApp deve esperar o `event_callback` do gtag (ou um timeout de
+   segurança de 1500ms, para o caso de bloqueadores de anúncio impedirem o gtag.js de carregar) —
+   nunca deve deixar de acontecer, e nunca deve rodar duas vezes.
+
+Mudanças:
+- **`.env.local`** (não versionado): rótulo corrigido para `GL-OCPHGiYcaElz-24Er`.
+- **`lib/analytics.ts`**: `trackGoogleAdsConversion()` agora recebe um `onComplete: () => void` e
+  usa um helper `createOnceCallback()` (fechamento com flag `called`) para garantir exatamente uma
+  execução do callback, disparada por `event_callback` do gtag **ou** por um `window.setTimeout` de
+  1500ms (mesmo valor do `event_timeout` passado ao gtag) — o que ocorrer primeiro.
+- **`components/landing/lead-form.tsx`**: removido o `window.setTimeout(..., 350)` fixo que existia
+  antes; agora `trackGoogleAdsConversion(() => window.location.assign(getWhatsappRedirectUrl(message)))`
+  é a única responsável por decidir quando redirecionar.
+
+**Pendente**: atualizar o rótulo corrigido (`GL-OCPHGiYcaElz-24Er`) também na env var
+`NEXT_PUBLIC_GOOGLE_ADS_CONVERSION_LABEL` da Vercel (produção) — o valor anterior enviado ao
+usuário estava incorreto.
+
+Teste adicional: como o método nativo `window.location.assign` não pode ser sobrescrito de forma
+confiável em teste automatizado (é não configurável), a garantia de execução única foi validada
+isolando a mesma lógica (`createOnceCallback` + `event_callback` + timeout de 1500ms) com o
+`window.gtag` real da página e um callback mock — resultado: exatamente 1 execução, mesmo com o
+callback real do gtag e o timeout de segurança correndo em paralelo.
 
 ### Arquivos alterados nesta sessão
 

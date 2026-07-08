@@ -146,7 +146,6 @@ export function LeadForm({
         landing_page_type: landingPageType,
         publication_need: needValue,
       })
-      trackGoogleAdsConversion()
 
       const needLabel = getPublicationNeedLabel(needValue)
       const message = buildWhatsappSuccessMessage(values.name, needLabel)
@@ -154,11 +153,12 @@ export function LeadForm({
       trackEvent('whatsapp_redirect', { landing_page_type: landingPageType })
       setStatus('success')
 
-      // Pequena espera para garantir que os eventos de analytics sejam
-      // registrados antes de sair da página (sem gerar espera perceptível).
-      window.setTimeout(() => {
+      // Redireciona ao WhatsApp assim que a conversão do Google Ads for
+      // registrada (ou após o timeout de segurança, caso o gtag.js esteja
+      // bloqueado) — nunca antes da confirmação de sucesso do webhook.
+      trackGoogleAdsConversion(() => {
         window.location.assign(getWhatsappRedirectUrl(message))
-      }, 350)
+      })
     } catch {
       trackEvent('quote_form_error', {
         landing_page_type: landingPageType,
